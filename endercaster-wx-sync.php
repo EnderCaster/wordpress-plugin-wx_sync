@@ -1,12 +1,15 @@
 <?php
-/*
-Plugin Name: 微信素材同步添加插件
-Plugin URI: https://wordpress.endercaster.com/
-Description: 特定标签的文章自动同步到素材库
-Version: 0.0.1
-Author: EnderCaster
-Author URI: https://wordpress.endercaster.com/
-*/
+
+/**
+ * @wordpress-plugin
+ * Plugin Name: 微信素材同步添加插件
+ * Plugin URI: https://wordpress.endercaster.com/
+ * Description: 特定标签的文章自动同步到素材库
+ * Version: 0.0.1
+ * Author: EnderCaster
+ * Author URI: https://wordpress.endercaster.com/
+ * @package endercaster-wx-sync
+ */
 // If this file is called directly, abort.
 if (!defined('WPINC')) {
     wp_die();
@@ -35,7 +38,28 @@ function init_database()
     }
 }
 register_activation_hook(__FILE__, 'init_database');
-
+/**
+ * 清理隐私信息
+ */
+function clear_information()
+{
+    global $wpdb;
+    $prefix = $wpdb->prefix;
+    update_option('endercaster-wx-app-id', '');
+    update_option('endercaster-wx-app-secret', '');
+    update_option('endercaster-wx-access-key', '');
+    update_option('endercaster-wx-expire-at', time());
+    update_option('endercaster-wx-preview-open-id', '');
+    if (boolval(get_option('endercaster-wx-clear-all-sync-data'))) {
+        $init_sql = file_get_contents(dirname(__FILE__) . '/clear.sql');
+        $init_sql = str_replace("{{prefix}}", $prefix, $init_sql);
+        $sqls = explode(";\n", str_replace("\r\n", "\n", $init_sql));
+        foreach ($sqls as $sql) {
+            $wpdb->query($sql);
+        }
+    }
+}
+register_deactivation_hook(__FILE__, 'clear_information');
 /**
  * 初始化设置项
  */
@@ -51,6 +75,10 @@ function options_init()
     register_setting('endercaster-wx-settings', 'endercaster-wx-expire-at', ['description' => 'Access Key过期时间']);
     add_option('endercaster-wx-preview-open-id', '');
     register_setting('endercaster-wx-settings', 'endercaster-wx-preview-open-id', ['description' => '预览用户的OPEN ID']);
+    add_option('endercaster-wx-affected-tag', '');
+    register_setting('endercaster-wx-settings', 'endercaster-wx-affected-tag', ['description' => '起效TAG，留空则对全部文章生效']);
+    add_option('endercaster-wx-clear-all-sync-data', false);
+    register_setting('endercaster-wx-settings', 'endercaster-wx-clear-all-sync-data', ['description' => '在禁用插件时清空同步表数据']);
 }
 add_action('admin_init', 'options_init');
 
@@ -66,7 +94,7 @@ function add_menu_item()
 }
 add_action("admin_menu", "add_menu_item");
 
-//TODO
+
 //---------------------------------------钩子---------------------------------------------
 /**
  * 文章同步钩子
@@ -75,6 +103,7 @@ add_action("admin_menu", "add_menu_item");
  */
 function sync_post_to_wx($post_id, $post)
 {
+    //TODO
 }
 add_action("publish_post", 'sync_post_to_wx', 10, 2);
 add_action("edit_post", 'sync_post_to_wx', 10, 2);
@@ -82,16 +111,7 @@ add_action("edit_post", 'sync_post_to_wx', 10, 2);
 
 
 //---------------------------------------工具函数---------------------------------------------
-/**
- * 写日志
- */
-function log_resp_to_database($status_code, $resp_data, $request_time = '', $type = "news")
-{
-    global $wpdb;
-    if (empty($request_time)) {
-        $request_time = date("Y-M-d H:i:s");
-    }
-}
+
 function obj_to_array($obj_array)
 {
     return json_decode(json_encode($obj_array, JSON_UNESCAPED_UNICODE), true);
@@ -99,7 +119,9 @@ function obj_to_array($obj_array)
 function build_sync_action($row)
 {
     $action = [];
-
+    if (array_key_exists('media_id', $row) && $row['media_id']) {
+        $action[] = build_link_with_function("预览", "send_preview(" . $row['id'] . ")");
+    }
     return implode("&nbsp;", $action);
 }
 function build_table($data, $headers)
@@ -149,13 +171,14 @@ function sync_posts_table()
 {
     global $wpdb;
     $prefix = $wpdb->prefix;
-    $sql = "select post.ID as post_id,post.post_title as title,sync.media_id as media_id from {$prefix}posts as post left join {$prefix}endercaser_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish'";
+    $sql = "select post.ID as post_id,post.post_title as title,sync.sync_time as sync_time,sync.media_id as media_id from {$prefix}posts as post left join {$prefix}endercaser_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish'";
     $data = $wpdb->get_results($sql);
     $data = obj_to_array($data);
     $headers = [
         'post_id' => 'ID',
         'title' => '标题',
         'media_id' => '微信素材ID',
+        'sync_time' => '上次同步时间',
         'action' => '操作'
 
     ];
@@ -164,6 +187,25 @@ function sync_posts_table()
     }
     $table_html = build_table($data, $headers);
     echo $table_html;
+}
+function get_post_as_array_by_id($post_id)
+{
+    global $wpdb;
+    $prefix = $wpdb->prefix;
+    $sql = "select
+    post.ID as id,
+    post.post_title as title,
+    user.display_name as author,
+    post.post_content as content,
+    sync.sync_time as update_time,
+    sync.media_id as media_id
+  from {$prefix}posts as post
+  left join {$prefix}users as user on post.post_author = user.ID
+  left join {$prefix}endercaser_wx_exists as sync on post.ID = sync.post_id
+  where
+    post.post_status = 'publish' and post.post_type='post' and post.ID={$post_id}";
+    $post = $wpdb->get_row($sql);
+    return obj_to_array($post);
 }
 // ---------------------------------------页面显示---------------------------------------------
 /**
@@ -228,13 +270,24 @@ function endercaster_wx_sync_settings_page()
 
         .title,
         .media_id {
-
+            word-break: keep-all;
             white-space: nowrap;
             overflow: hidden;
         }
 
         .action {
             width: 200px;
+        }
+
+        .sync_time {
+            width: 100px;
+        }
+
+        td.title,
+        td.media_id,
+        td.sync_time,
+        td.action {
+            border-left: 1px solid lightgray;
         }
     </style>
 <?php
@@ -275,7 +328,20 @@ add_action('rest_api_init', function () {
         'callback' => 'sync_one'
     ));
 });
+//TODO 删除
+function test_lib($request)
+{
+    return new WP_REST_Response(get_post_as_array_by_id(1));
+}
+add_action('rest_api_init', function () {
+    register_rest_route('endercaster/wx/v1', 'test', array(
+        'methods'  => 'GET',
+        'callback' => 'test_lib'
+    ));
+});
 // ---------------------------------------微信部分---------------------------------------------
+require plugin_dir_path(__FILE__) . 'classes/class-endercaster-wx-lib.php';
+$wxlib = new WxLib();
 /**
  * 添加新图文消息到微信
  * @var $post array
@@ -292,13 +358,16 @@ function update_news_to_wx($post)
 }
 /**
  * 发送预览
- * @var $media_id string 微信素材ID
+ * @var $post array post信息，包含微信素材ID，原始post内容
  */
-function send_preview($media_id = '')
+function send_preview($post)
 {
     //TODO
-    $to_user = get_option('');
+    $to_user = get_option('endercaster-wx-preview-open-id');
     if (empty($to_user)) {
-        return [];
+        return false;
     }
+    global $wxlib;
+    $resp_data = $wxlib->push_to_preview($post['media_id'], $to_user);
+    return true;
 }
