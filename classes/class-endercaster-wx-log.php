@@ -24,9 +24,9 @@ class Log
         global $wpdb;
         $prefix = $wpdb->prefix;
         if (empty($request_time)) {
-            $request_time = date("Y-M-d H:i:s");
+            $request_time = date_i18n("Y-m-d H:i:s");
         }
-        $wpdb->insert("{$prefix}endercaser_wx_log", [
+        $wpdb->insert("{$prefix}endercaster_wx_log", [
             "request_data" => json_encode($request_data, JSON_UNESCAPED_UNICODE),
             'status_code' => $status_code,
             'request_time' => $request_time,

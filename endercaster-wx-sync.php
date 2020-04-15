@@ -25,10 +25,9 @@ function init_database()
     $prefix = $wpdb->prefix;
     $tables = [];
     $results = $wpdb->get_results("show tables");
-    foreach ($results as $table) {
-        $tables[] = $table->Tables_in_wordpress;
-    }
-    if (array_search("{$prefix}endercaser_wx_exists", $tables) === false) {
+    $results = json_decode(json_encode($results), true);
+    $tables = array_column($results, "Tables_in_" . DB_NAME);
+    if (array_search("{$prefix}endercaster_wx_exists", $tables) === false) {
         $init_sql = file_get_contents(dirname(__FILE__) . '/dump.sql');
         $init_sql = str_replace("{{prefix}}", $prefix, $init_sql);
         $sqls = explode(";\n", str_replace("\r\n", "\n", $init_sql));
@@ -45,11 +44,12 @@ function clear_information()
 {
     global $wpdb;
     $prefix = $wpdb->prefix;
-    update_option('endercaster-wx-app-id', '');
-    update_option('endercaster-wx-app-secret', '');
-    update_option('endercaster-wx-access-key', '');
-    update_option('endercaster-wx-expire-at', time());
-    update_option('endercaster-wx-preview-open-id', '');
+    //TODO 解除注释
+    // update_option('endercaster-wx-app-id', '');
+    // update_option('endercaster-wx-app-secret', '');
+    // update_option('endercaster-wx-access-key', '');
+    // update_option('endercaster-wx-expire-at', time());
+    // update_option('endercaster-wx-preview-open-id', '');
     if (boolval(get_option('endercaster-wx-clear-all-sync-data'))) {
         $init_sql = file_get_contents(dirname(__FILE__) . '/clear.sql');
         $init_sql = str_replace("{{prefix}}", $prefix, $init_sql);
@@ -91,6 +91,7 @@ function add_menu_item()
     add_submenu_page('plugins.php', '微信设置', '微信设置', 'manage_options', 'endercaster-wx-settings', 'endercaster_wx_settings_page');
     // add_menu_page( $page_title, $menu_title, $capability, $menu_slug, $function = '', $icon_url = '', $position = null )
     add_menu_page("微信公众号同步设置", "公众号同步设置", "manage_options", "endercaster-wx-sync-settings", "endercaster_wx_sync_settings_page", null, 99);
+    add_menu_page("微信接口请求日志", "微信接口请求日志", "manage_options", "endercaster-wx-sync-logs", "endercaster_wx_sync_log_page", null, 99);
 }
 add_action("admin_menu", "add_menu_item");
 
@@ -108,8 +109,6 @@ function sync_post_to_wx($post_id, $post)
 add_action("publish_post", 'sync_post_to_wx', 10, 2);
 add_action("edit_post", 'sync_post_to_wx', 10, 2);
 
-
-
 //---------------------------------------工具函数---------------------------------------------
 
 function obj_to_array($obj_array)
@@ -119,14 +118,15 @@ function obj_to_array($obj_array)
 function build_sync_action($row)
 {
     $action = [];
+    $action[] = build_link_with_function("上传", "upload_post(" . $row['post_id'] . ")");
     if (array_key_exists('media_id', $row) && $row['media_id']) {
-        $action[] = build_link_with_function("预览", "send_preview(" . $row['id'] . ")");
+        $action[] = build_link_with_function("预览", "send_preview(" . $row['post_id'] . ")");
     }
     return implode("&nbsp;", $action);
 }
 function build_table($data, $headers)
 {
-    $table_html = "<table class='wp-list-table widefat fixed striped'>";
+    $table_html = "<div class='wrap'><table class='wp-list-table widefat fixed striped'>";
     $table_html .= "<thead><tr>";
     foreach ($headers as $key => $label) {
         $table_html .= "<th class='$key'>{$label}</th>";
@@ -145,7 +145,7 @@ function build_table($data, $headers)
         $table_html .= "<th class='$key'>{$label}</th>";
     }
     $table_html .= "</tr></tfoot>";
-    $table_html .= "</table>";
+    $table_html .= "</table></div>";
     return $table_html;
 }
 function build_link_with_function($label, $function_string)
@@ -156,22 +156,22 @@ function build_link_with_function($label, $function_string)
 
 function sync_post_by_id($post_id)
 {
-    global $wpdb;
-    $prefix = $wpdb->prefix;
-    $exists_posts = obj_to_array($wpdb->get_results("select * from {$prefix}endercaser_wx_exists"));
 
-    $result = [];
-    if (array_search(intval($post_id), array_column($exists_posts, 'post_id')) === false) {
-        $result = add_news_to_wx($post_id);
+    $post = get_post_as_array_by_id($post_id);
+
+    $result = false;
+    if (empty($post['media_id'])) {
+        $result = add_news_to_wx($post);
     } else {
-        $result = update_news_to_wx($post_id);
+        $result = update_news_to_wx($post);
     }
+    return $result;
 }
 function sync_posts_table()
 {
     global $wpdb;
     $prefix = $wpdb->prefix;
-    $sql = "select post.ID as post_id,post.post_title as title,sync.sync_time as sync_time,sync.media_id as media_id from {$prefix}posts as post left join {$prefix}endercaser_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish'";
+    $sql = "select post.ID as post_id,post.post_title as title,sync.sync_time as sync_time,sync.media_id as media_id from {$prefix}posts as post left join {$prefix}endercaster_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish'";
     $data = $wpdb->get_results($sql);
     $data = obj_to_array($data);
     $headers = [
@@ -188,6 +188,24 @@ function sync_posts_table()
     $table_html = build_table($data, $headers);
     echo $table_html;
 }
+function sync_logs_table()
+{
+    global $wpdb;
+    $prefix = $wpdb->prefix;
+    $sql = "select * from {$prefix}endercaster_wx_log;";
+    $data = $wpdb->get_results($sql);
+    $data = obj_to_array($data);
+    $headers = [
+        'id' => 'ID',
+        'request_data' => '请求参数',
+        'status_code' => 'HTTP返回码',
+        'request_time' => '请求时间',
+        'type' => '请求类型',
+        'response_data' => '返回参数'
+    ];
+    $table_html = build_table($data, $headers);
+    echo $table_html;
+}
 function get_post_as_array_by_id($post_id)
 {
     global $wpdb;
@@ -201,7 +219,7 @@ function get_post_as_array_by_id($post_id)
     sync.media_id as media_id
   from {$prefix}posts as post
   left join {$prefix}users as user on post.post_author = user.ID
-  left join {$prefix}endercaser_wx_exists as sync on post.ID = sync.post_id
+  left join {$prefix}endercaster_wx_exists as sync on post.ID = sync.post_id
   where
     post.post_status = 'publish' and post.post_type='post' and post.ID={$post_id}";
     $post = $wpdb->get_row($sql);
@@ -259,10 +277,8 @@ function endercaster_wx_sync_settings_page()
 ?>
     <!-- header -->
     <h1>文章同步列表</h1>
-    <div class="wrap">
-        <!-- list -->
-        <?php sync_posts_table(); ?>
-    </div>
+    <!-- list -->
+    <?php sync_posts_table(); ?>
     <style>
         .post_id {
             width: 20px;
@@ -280,7 +296,7 @@ function endercaster_wx_sync_settings_page()
         }
 
         .sync_time {
-            width: 100px;
+            width: 150px;
         }
 
         td.title,
@@ -290,6 +306,77 @@ function endercaster_wx_sync_settings_page()
             border-left: 1px solid lightgray;
         }
     </style>
+    <script>
+        function upload_post(post_id) {
+            jQuery.ajax({
+                type: "POST",
+                url: '<?php bloginfo('url'); ?>/wp-json/endercaster/wx/v1/sync/one',
+                dataType: 'json',
+                data: {
+                    'post_id': post_id
+                },
+                beforeSend: function(request) {
+                    request.setRequestHeader('X-WP-Nonce', "<?php echo wp_create_nonce('wp_rest'); ?>");
+                },
+                success: function(resp) {
+                    console.log(resp);
+                    if (!resp.code) {
+                        location.reload(true);
+                    } else {
+                        alert('同步出错，请查看log');
+                    }
+
+                }
+            })
+        }
+
+        function send_preview(post_id) {
+            jQuery.ajax({
+                type: "POST",
+                url: '<?php bloginfo('url'); ?>/wp-json/endercaster/wx/v1/sync/preview',
+                dataType: 'json',
+                data: {
+                    'post_id': post_id
+                },
+                beforeSend: function(request) {
+                    request.setRequestHeader('X-WP-Nonce', "<?php echo wp_create_nonce('wp_rest'); ?>");
+                },
+                success: function(resp) {
+                    console.log(resp);
+                    if (!resp.code) {
+                        location.reload(true);
+                    } else {
+                        alert('同步出错，请查看log');
+                    }
+
+                }
+            })
+        }
+    </script>
+<?php
+}
+function endercaster_wx_sync_log_page()
+{
+?>
+    <h1>微信接口请求日志</h1>
+    <?php sync_logs_table(); ?>
+    <style>
+        tr>td {
+            line-break: keep-all;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        .id {
+            width: 20px;
+            text-align: center;
+        }
+    </style>
+    <script>
+        jQuery('tr>td').each(function() {
+            this.title = this.innerText;
+        });
+    </script>
 <?php
 }
 // ---------------------------------------REST部分---------------------------------------------
@@ -316,8 +403,11 @@ function sync_one($request)
         $resp->set_status(403);
         return $resp;
     }
-    sync_post_by_id($request['post_id']);
-    $data = [];
+    $result = sync_post_by_id($request['post_id']);
+
+    $data = [
+        'code' => $result ? 0 : -1
+    ];
     $resp = new WP_REST_Response($data);
     $resp->set_status(200);
     return $resp;
@@ -328,10 +418,36 @@ add_action('rest_api_init', function () {
         'callback' => 'sync_one'
     ));
 });
+function sync_preview($request)
+{
+    if (!is_user_logged_in()) {
+        $resp = new WP_REST_Response([]);
+        $resp->set_status(403);
+        return $resp;
+    }
+    $post = get_post_as_array_by_id($request['post_id']);
+    $result = send_preview($post['media_id']);
+
+    $data = [
+        'code' => $result ? 0 : -1
+    ];
+    $resp = new WP_REST_Response($data);
+    $resp->set_status(200);
+    return $resp;
+}
+add_action('rest_api_init', function () {
+    register_rest_route('endercaster/wx/v1', 'sync/preview', array(
+        'methods'  => 'POST',
+        'callback' => 'sync_preview'
+    ));
+});
 //TODO 删除
 function test_lib($request)
 {
-    return new WP_REST_Response(get_post_as_array_by_id(1));
+    global $wxlib;
+    return new WP_REST_Response(
+        $wxlib->get_permanent_media_list("news")
+    );
 }
 add_action('rest_api_init', function () {
     register_rest_route('endercaster/wx/v1', 'test', array(
@@ -348,6 +464,25 @@ $wxlib = new WxLib();
  */
 function add_news_to_wx($post)
 {
+    global $wxlib, $wpdb;
+    $thumb_media_id = $thumb_media_id = get_post_thumb_media_id($post['id']);
+    if (empty($thumb_media_id)) {
+        return false;
+    }
+    $news_media_id = $wxlib->add_news($post['title'], $post['content'], $thumb_media_id, $post['guid'], $post['author']);
+
+    if (empty($news_media_id)) {
+        return false;
+    }
+    $prefix = $wpdb->prefix;
+    $wpdb->insert("{$prefix}endercaster_wx_exists", [
+        "post_id" => $post['id'],
+        "media_id" => $news_media_id,
+        "type" => "news",
+        "sync_time" => date_i18n("Y-m-d H:i:s")
+    ]);
+    send_preview($news_media_id);
+    return true;
 }
 /**
  * 更新微信图文消息
@@ -355,19 +490,60 @@ function add_news_to_wx($post)
  */
 function update_news_to_wx($post)
 {
+    global $wxlib, $wpdb;
+    $thumb_media_id = get_post_thumb_media_id($post['id']);
+    if (empty($thumb_media_id)) {
+        return false;
+    }
+    $code = $wxlib->update_news($post['media_id'], $post['title'], $post['content'], $thumb_media_id, $post['guid'], $post['author']);
+    if (!empty($code)) {
+        return false;
+    }
+    $prefix = $wpdb->prefix;
+    $wpdb->update("{$prefix}endercaster_wx_exists", ["sync_time" => date_i18n("Y-m-d H:i:s")], ["post_id" => $post['id']]);
+    return true;
+}
+/**
+ * 获取图文消息缩略图的微信素材ID
+ * @var $post_id
+ */
+function get_post_thumb_media_id($post_id)
+{
+    global $wxlib, $wpdb;
+    $thumbnail_id = get_post_thumbnail_id($post_id);
+    if (empty($thumbnail_id)) {
+        return "";
+    }
+    $prefix = $wpdb->prefix;
+    $thumb_media_id = $wpdb->get_row("select media_id from {$prefix}endercaster_wx_exists where post_id={$thumbnail_id}")->media_id;
+    if (!empty($thumb_media_id)) {
+        return $thumb_media_id;
+    }
+    $thumb_url = get_post($thumbnail_id)->guid;
+    $thumb_path = ABSPATH . explode(get_option('siteurl'), $thumb_url)[1];
+    $thumb_media_id = $wxlib->add_permanent_material($thumb_path, 'thumb');
+    if (!empty($thumb_media_id)) {
+        $wpdb->insert("{$prefix}endercaster_wx_exists", [
+            "post_id" => $thumbnail_id,
+            "media_id" => $thumb_media_id,
+            "type" => "thumb",
+            "sync_time" => date_i18n("Y-m-d H:i:s")
+        ]);
+    }
+    return $thumb_media_id;
 }
 /**
  * 发送预览
- * @var $post array post信息，包含微信素材ID，原始post内容
+ * @var $media_id 微信图文消息素材ID
  */
-function send_preview($post)
+function send_preview($media_id)
 {
-    //TODO
     $to_user = get_option('endercaster-wx-preview-open-id');
     if (empty($to_user)) {
         return false;
     }
     global $wxlib;
-    $resp_data = $wxlib->push_to_preview($post['media_id'], $to_user);
-    return true;
+    $code = $wxlib->push_to_preview($media_id, $to_user);
+    //code=0的时候说明正常
+    return empty($code);
 }

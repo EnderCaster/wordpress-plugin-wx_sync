@@ -39,17 +39,13 @@ class WxLib
         $acc_data = json_decode($acc_data, true);
         $access_token = $acc_data['access_token'];
         $expire_at = $start_at + $acc_data['expires_in'] - 20;
-        $this->cache->put('access_token', $access_token);
-        $this->cache->put('token_expire_at', $expire_at);
+        update_option('endercaster-wx-access-key', $access_token);
+        update_option('endercaster-wx-expire-at', $expire_at);
         return $access_token;
     }
-    function log($curl, $response_data, $type)
+    function log($curl, $response_data, $type, $post_data = [])
     {
         $status_code = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-        $post_data = curl_getinfo($curl, CURLOPT_POSTFIELDS);
-        if (is_string($post_data)) {
-            $post_data = json_decode($post_data, true);
-        }
         $request_data = $this->get_request_data_from_url(curl_getinfo($curl, CURLOPT_URL));
         $request_data = array_merge($request_data, $post_data);
         Log::log_resp_to_database($status_code, $response_data, $request_data, '', $type);
@@ -110,7 +106,8 @@ class WxLib
         $post_data['count'] = $count;
         $curl = $this->json_post($url, $post_data);
         $response_data = $this->get_curl_resp_data($curl);
-        $this->log($curl, $response_data, 'get_media_list');
+        $this->log($curl, $response_data, 'get_media_list', $post_data);
+        curl_close($curl);
         //TODO
         return $response_data;
     }
@@ -120,6 +117,7 @@ class WxLib
         $curl = $this->base_get($url);
         $response_data = $this->get_curl_resp_data($curl);
         $this->log($curl, $response_data, 'get_media_counts');
+        curl_close($curl);
         //TODO
         return $response_data;
     }
@@ -129,9 +127,9 @@ class WxLib
         $post_data['media'] = new CURLFile($file);
         $curl = $this->base_post($url, $post_data);
         $response_data = $this->get_curl_resp_data($curl);
-        $this->log($curl, $response_data, "add_permanent_{$type}");
-        //TODO
-        return $response_data;
+        $this->log($curl, $response_data, "add_permanent_{$type}", $post_data);
+        curl_close($curl);
+        return array_key_exists('media_id', $response_data) ? $response_data['media_id'] : "";
     }
     function add_news($title, $content, $thumb, $source_url, $author = "EnderCaster", $show_cover_pic = 1, $digest = "")
     {
@@ -150,9 +148,32 @@ class WxLib
         $post_data['articles'][] = $single_article_data;
         $curl = $this->json_post($url, $post_data);
         $response_data = $this->get_curl_resp_data($curl);
-        $this->log($curl, $response_data, 'news');
-        //TODO
-        return $response_data;
+        $this->log($curl, $response_data, 'add_news', $post_data);
+        curl_close($curl);
+        return array_key_exists('media_id', $response_data) ? $response_data['media_id'] : "";
+    }
+    function update_news($media_id, $title, $content, $thumb, $source_url, $author = "EnderCaster", $show_cover_pic = 1, $digest = "")
+    {
+        $url = "https://api.weixin.qq.com/cgi-bin/material/update_news?access_token=" . $this->get_access_key();
+        $single_article_data = [
+            'title' => $title,
+            'content' => $content,
+            "thumb_media_id" => $thumb,
+            "content_source_url" => $source_url,
+            "author" => $author,
+            'show_cover_pic' => $show_cover_pic
+        ];
+        if ($digest) {
+            $single_article_data['digest'] = $digest;
+        }
+        $post_data['articles'] = $single_article_data;
+        $post_data['media_id'] = $media_id;
+        $post_data['index'] = 0;
+        $curl = $this->json_post($url, $post_data);
+        $response_data = $this->get_curl_resp_data($curl);
+        $this->log($curl, $response_data, 'update_news', $post_data);
+        curl_close($curl);
+        return $response_data['errcode'];
     }
     function push_to_preview($news_media_id, $to_user)
     {
@@ -166,8 +187,8 @@ class WxLib
         ];
         $curl = $this->json_post($url, $post_data);
         $response_data = $this->get_curl_resp_data($curl);
-        $this->log($curl, $response_data, 'preview');
-        //TODO
-        return $response_data;
+        $this->log($curl, $response_data, 'preview', $post_data);
+        curl_close($curl);
+        return $response_data['errcode'];
     }
 }
