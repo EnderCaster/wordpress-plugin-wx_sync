@@ -171,7 +171,10 @@ function sync_posts_table()
 {
     global $wpdb;
     $prefix = $wpdb->prefix;
-    $sql = "select post.ID as post_id,post.post_title as title,sync.sync_time as sync_time,sync.media_id as media_id from {$prefix}posts as post left join {$prefix}endercaster_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish'";
+    [$current_page, $page_size] = build_page_parameter();
+    $start = ($current_page - 1) * $page_size;
+    $sql = "select post.ID as post_id,post.post_title as title,sync.sync_time as sync_time,sync.media_id as media_id from {$prefix}posts as post left join {$prefix}endercaster_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish' limit {$start},{$page_size}";
+    $sql_count = "select count(post.ID) as total from {$prefix}posts as post left join {$prefix}endercaster_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish'";
     $data = $wpdb->get_results($sql);
     $data = obj_to_array($data);
     $headers = [
@@ -187,12 +190,18 @@ function sync_posts_table()
     }
     $table_html = build_table($data, $headers);
     echo $table_html;
+    $total = $wpdb->get_row($sql_count)->total;
+    echo build_pageination($total, $page_size, $current_page);
+    endercaster_pagination_css();
 }
 function sync_logs_table()
 {
     global $wpdb;
     $prefix = $wpdb->prefix;
-    $sql = "select * from {$prefix}endercaster_wx_log;";
+    [$current_page, $page_size] = build_page_parameter();
+    $start = ($current_page - 1) * $page_size;
+    $sql = "select * from {$prefix}endercaster_wx_log limit {$start},{$page_size};";
+    $sql_count = "select count(id) as total from {$prefix}endercaster_wx_log;";
     $data = $wpdb->get_results($sql);
     $data = obj_to_array($data);
     $headers = [
@@ -205,6 +214,9 @@ function sync_logs_table()
     ];
     $table_html = build_table($data, $headers);
     echo $table_html;
+    $total = $wpdb->get_row($sql_count)->total;
+    echo build_pageination($total, $page_size, $current_page);
+    endercaster_pagination_css();
 }
 function get_post_as_array_by_id($post_id)
 {
@@ -224,6 +236,33 @@ function get_post_as_array_by_id($post_id)
     post.post_status = 'publish' and post.post_type='post' and post.ID={$post_id}";
     $post = $wpdb->get_row($sql);
     return obj_to_array($post);
+}
+function build_page_parameter()
+{
+    $current_page = array_key_exists('paged', $_REQUEST) ? $_REQUEST['paged'] : 1;
+    $page_size = get_option('posts_per_page');
+    return [$current_page, $page_size];
+}
+function build_pageination($total, $page_size, $current_page)
+{
+    $total_page = intval($total / $page_size) + ($total % $page_size >= 1 ? 1 : 0);
+    $current_page_name = $_REQUEST['page'];
+    $post_url = $current_page <= 1 ? "" : admin_url() . "/admin.php?page=" . $current_page_name . "&paged=" . $current_page - 1;
+    $next_url = $current_page >= $total_page ? "" : admin_url() . "/admin.php?page=" . $current_page_name . "&paged=" . $current_page + 1;
+    $pageination_html = "<div class='endercaster_pagination_wrapper'>";
+    if ($post_url) {
+        $pageination_html .= "<a class='post_page' href='{$post_url}'>&lt;</a>";
+    } else {
+        $pageination_html .= "<a class='post_page disabled' href='#' onclick='void(0)'>&lt;</a>";
+    }
+    $pageination_html .= "<a class='current_page' href='#' onclick='void(0)'>{$current_page}</a>";
+    if ($next_url) {
+        $pageination_html .= "<a class='next_page' href='{$next_url}'>&gt;</a>";
+    } else {
+        $pageination_html .= "<a class='next_page disabled' href='#' onclick='void(0)'>&gt;</a>";
+    }
+    $pageination_html .= "</div>";
+    return $pageination_html;
 }
 // ---------------------------------------页面显示---------------------------------------------
 /**
@@ -259,8 +298,23 @@ function endercaster_wx_settings_page()
                 <td>
                     <select id="endercaster-wx-affected-tag" name="endercaster-wx-affected-tag">
                         <option value="0">全部</option>
+                        <?php
+                        $selected = get_option('endercaster-wx-affected-tag');
+                        $tags = get_tags();
+                        foreach ($tags as $tag) {
+                            if ($tag->term_id == $selected) {
+                                echo "<option value='" . $tag->term_id . "' selected>" . $tag->name . "</option>";
+                            } else {
+                                echo "<option value='" . $tag->term_id . "'>" . $tag->name . "</option>";
+                            }
+                        }
+                        ?>
                     </select>
                 </td>
+            </tr>
+            <tr>
+                <th>禁用时清空所有数据</th>
+                <td><input type="checkbox" id="endercaster-wx-clear-all-sync-data" name="endercaster-wx-clear-all-sync-data" <?php echo get_option('endercaster-wx-clear-all-sync-data') ? "checked" : ""; ?> /></td>
             </tr>
         </table>
         <!-- submit -->
@@ -277,6 +331,7 @@ function endercaster_wx_sync_settings_page()
 ?>
     <!-- header -->
     <h1>文章同步列表</h1>
+    <a class="button button-default" href="#" onclick="sync_all()">>拉取微信素材</a>
     <!-- list -->
     <?php sync_posts_table(); ?>
     <style>
@@ -310,7 +365,7 @@ function endercaster_wx_sync_settings_page()
         function upload_post(post_id) {
             jQuery.ajax({
                 type: "POST",
-                url: '<?php bloginfo('url'); ?>/wp-json/endercaster/wx/v1/sync/one',
+                url: '<?php bloginfo('url'); ?>/wp-json/endercaster/wx/v1/upload/one',
                 dataType: 'json',
                 data: {
                     'post_id': post_id
@@ -319,7 +374,6 @@ function endercaster_wx_sync_settings_page()
                     request.setRequestHeader('X-WP-Nonce', "<?php echo wp_create_nonce('wp_rest'); ?>");
                 },
                 success: function(resp) {
-                    console.log(resp);
                     if (!resp.code) {
                         location.reload(true);
                     } else {
@@ -350,7 +404,28 @@ function endercaster_wx_sync_settings_page()
                     }
 
                 }
-            })
+            });
+        }
+
+        function download_all() {
+            jQuery.ajax({
+                type: "POST",
+                url: '<?php bloginfo('url'); ?>/wp-json/endercaster/wx/v1/download/all',
+                dataType: 'json',
+                data: {},
+                beforeSend: function(request) {
+                    request.setRequestHeader('X-WP-Nonce', "<?php echo wp_create_nonce('wp_rest'); ?>");
+                },
+                success: function(resp) {
+                    console.log(resp);
+                    if (!resp.code) {
+                        location.reload(true);
+                    } else {
+                        alert('拉取出错，请查看log');
+                    }
+
+                }
+            });
         }
     </script>
 <?php
@@ -379,24 +454,39 @@ function endercaster_wx_sync_log_page()
     </script>
 <?php
 }
+function endercaster_pagination_css()
+{
+?>
+    <style>
+        .endercaster_pagination_wrapper {}
+
+        .post_page,
+        .next_page,
+        .current_page {}
+
+        .post_page.disabled,
+        .next_page.disabled {}
+
+        .current_page {}
+    </style>
+<?php
+}
 // ---------------------------------------REST部分---------------------------------------------
 //TODO 暂时搁置
-function sync_all($request)
+function download_all($request)
 {
     //循环获取全部news
     //获取全部符合条件的post
-    //获取全部记录
-    //对比 post update time 和 resp.item[i].update_time
+    //逐条对比news的resp.item[.].content.news_item[0].url与post.guid
     //
 }
 add_action('rest_api_init', function () {
-    register_rest_route('endercaster/wx/v1', 'sync/all', array(
+    register_rest_route('endercaster/wx/v1', 'download/all', array(
         'methods'  => 'POST',
-        'callback' => 'sync_all'
+        'callback' => 'download_all'
     ));
 });
-//TODO
-function sync_one($request)
+function upload_one($request)
 {
     if (!is_user_logged_in()) {
         $resp = new WP_REST_Response([]);
@@ -413,9 +503,9 @@ function sync_one($request)
     return $resp;
 }
 add_action('rest_api_init', function () {
-    register_rest_route('endercaster/wx/v1', 'sync/one', array(
+    register_rest_route('endercaster/wx/v1', 'upload/one', array(
         'methods'  => 'POST',
-        'callback' => 'sync_one'
+        'callback' => 'upload_one'
     ));
 });
 function sync_preview($request)
