@@ -88,10 +88,11 @@ add_action('admin_init', 'options_init');
 function add_menu_item()
 {
     // 插件设置
-    add_submenu_page('plugins.php', '微信设置', '微信设置', 'manage_options', 'endercaster-wx-settings', 'endercaster_wx_settings_page');
-    // add_menu_page( $page_title, $menu_title, $capability, $menu_slug, $function = '', $icon_url = '', $position = null )
-    add_menu_page("微信公众号同步设置", "公众号同步设置", "manage_options", "endercaster-wx-sync-settings", "endercaster_wx_sync_settings_page", null, 99);
-    add_menu_page("微信接口请求日志", "微信接口请求日志", "manage_options", "endercaster-wx-sync-logs", "endercaster_wx_sync_log_page", null, 99);
+
+    add_menu_page("公众号管理", "公众号管理", "manage_options", "endercaster-wx-settings", "endercaster_wx_settings_page", null, 99);
+    add_submenu_page('endercaster-wx-settings', '基础信息', '基础信息', 'manage_options', 'endercaster-wx-settings', 'endercaster_wx_settings_page');
+    add_submenu_page('endercaster-wx-settings', '文章同步', '文章同步', 'manage_options', 'endercaster-wx-sync-settings', 'endercaster_wx_sync_settings_page');
+    add_submenu_page('endercaster-wx-settings', '请求日志', '请求日志', 'manage_options', 'endercaster-wx-sync-logs', 'endercaster_wx_sync_log_page');
 }
 add_action("admin_menu", "add_menu_item");
 
@@ -118,9 +119,14 @@ function obj_to_array($obj_array)
 function build_sync_action($row)
 {
     $action = [];
-    $action[] = build_link_with_function("上传", "upload_post(" . $row['post_id'] . ")");
+    if (array_key_exists('media_id', $row) && $row['post_id']) {
+        $action[] = build_link_with_function("上传", "upload_post(" . $row['post_id'] . ")");
+    }
+
     if (array_key_exists('media_id', $row) && $row['media_id']) {
-        $action[] = build_link_with_function("预览", "send_preview(" . $row['post_id'] . ")");
+        $action[] = build_link_with_function("预览", "send_preview(" . $row['sync_id'] . ")");
+        $action[] = build_link_with_function("存储", "sync_local(" . $row['sync_id'] . ")");
+        $action[] = build_link_with_function("删除", "delete_remote(" . $row['sync_id'] . ")");
     }
     return implode("&nbsp;", $action);
 }
@@ -173,7 +179,7 @@ function sync_posts_table()
     $prefix = $wpdb->prefix;
     [$current_page, $page_size] = build_page_parameter();
     $start = ($current_page - 1) * $page_size;
-    $sql = "select post.ID as post_id,post.post_title as title,sync.sync_time as sync_time,sync.media_id as media_id from {$prefix}posts as post left join {$prefix}endercaster_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish' limit {$start},{$page_size}";
+    $sql = "select sync.id as sync_id,post.ID as post_id,post.post_title as title,sync.sync_time as sync_time,sync.media_id as media_id from {$prefix}posts as post left join {$prefix}endercaster_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish' limit {$start},{$page_size}";
     $sql_count = "select count(post.ID) as total from {$prefix}posts as post left join {$prefix}endercaster_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish'";
     $data = $wpdb->get_results($sql);
     $data = obj_to_array($data);
@@ -331,7 +337,7 @@ function endercaster_wx_sync_settings_page()
 ?>
     <!-- header -->
     <h1>文章同步列表</h1>
-    <a class="button button-default" href="#" onclick="sync_all()">>拉取微信素材</a>
+    <a class="button button-default" href="#" onclick="download_all()">拉取微信素材</a>
     <!-- list -->
     <?php sync_posts_table(); ?>
     <style>
@@ -384,13 +390,13 @@ function endercaster_wx_sync_settings_page()
             })
         }
 
-        function send_preview(post_id) {
+        function send_preview(sync_id) {
             jQuery.ajax({
                 type: "POST",
                 url: '<?php bloginfo('url'); ?>/wp-json/endercaster/wx/v1/sync/preview',
                 dataType: 'json',
                 data: {
-                    'post_id': post_id
+                    'sync_id': sync_id
                 },
                 beforeSend: function(request) {
                     request.setRequestHeader('X-WP-Nonce', "<?php echo wp_create_nonce('wp_rest'); ?>");
@@ -515,7 +521,11 @@ function sync_preview($request)
         $resp->set_status(403);
         return $resp;
     }
-    $post = get_post_as_array_by_id($request['post_id']);
+    global $wpdb;
+    $prefix = $wpdb->prefix;
+    $sync_id = $request['sync_id'];
+    $sql = "select media_id from {$prefix}endercaster_wx_exists where id={$sync_id}";
+    $post = $wpdb->get_row($sql);
     $result = send_preview($post['media_id']);
 
     $data = [
