@@ -191,4 +191,16 @@ class WxLib
         curl_close($curl);
         return $response_data['errcode'];
     }
+    function delete_material($media_id)
+    {
+        $url = 'https://api.weixin.qq.com/cgi-bin/material/del_material?access_token=' . $this->get_access_key();
+        $post_data = [
+            'media_id' => $media_id
+        ];
+        $curl = $this->json_post($url, $post_data);
+        $response_data = $this->get_curl_resp_data($curl);
+        $this->log($curl, $response_data, 'delete_material', $post_data);
+        curl_close($curl);
+        return $response_data['errcode'];
+    }
 }

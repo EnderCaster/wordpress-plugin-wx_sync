@@ -1,2 +1,2 @@
-drop table `{{prefix}}endercaser_wx_exists` IF EXISTS;
-drop table `{{prefix}}endercaser_wx_log` IF EXISTS;
+drop table IF EXISTS `{{prefix}}endercaster_wx_exists`;
+drop table IF EXISTS `{{prefix}}endercaster_wx_log`;

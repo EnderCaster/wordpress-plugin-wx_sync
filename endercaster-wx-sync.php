@@ -105,7 +105,13 @@ add_action("admin_menu", "add_menu_item");
  */
 function sync_post_to_wx($post_id, $post)
 {
-    //TODO
+    $valid_tag_id = get_option('endercaster-wx-affected-tag');
+    $post_tags = wp_get_post_tags($post_id);
+    $post_tags = obj_to_array($post_tags);
+    $post_tags = array_column($post_tags, 'term_id');
+    if (0 == $valid_tag_id || in_array($valid_tag_id, $post_tags)) {
+        sync_post_by_id($post_id);
+    }
 }
 add_action("publish_post", 'sync_post_to_wx', 10, 2);
 add_action("edit_post", 'sync_post_to_wx', 10, 2);
@@ -233,6 +239,7 @@ function get_post_as_array_by_id($post_id)
     post.post_title as title,
     user.display_name as author,
     post.post_content as content,
+    sync.id as sync_id,
     sync.sync_time as update_time,
     sync.media_id as media_id
   from {$prefix}posts as post
@@ -242,6 +249,14 @@ function get_post_as_array_by_id($post_id)
     post.post_status = 'publish' and post.post_type='post' and post.ID={$post_id}";
     $post = $wpdb->get_row($sql);
     return obj_to_array($post);
+}
+function get_wx_exists_record($id)
+{
+    global $wpdb;
+    $prefix = $wpdb->prefix;
+    $sql = "select * from {$prefix}endercaster_wx_exists where id={$id}";
+    $record = $wpdb->get_row($sql);
+    return obj_to_array($record);
 }
 function build_page_parameter()
 {
@@ -253,8 +268,8 @@ function build_pageination($total, $page_size, $current_page)
 {
     $total_page = intval($total / $page_size) + ($total % $page_size >= 1 ? 1 : 0);
     $current_page_name = $_REQUEST['page'];
-    $post_url = $current_page <= 1 ? "" : admin_url() . "/admin.php?page=" . $current_page_name . "&paged=" . $current_page - 1;
-    $next_url = $current_page >= $total_page ? "" : admin_url() . "/admin.php?page=" . $current_page_name . "&paged=" . $current_page + 1;
+    $post_url = $current_page <= 1 ? "" : admin_url() . "/admin.php?page=" . $current_page_name . "&paged=" . ($current_page - 1);
+    $next_url = $current_page >= $total_page ? "" : admin_url() . "/admin.php?page=" . $current_page_name . "&paged=" . ($current_page + 1);
     $pageination_html = "<div class='endercaster_pagination_wrapper'>";
     if ($post_url) {
         $pageination_html .= "<a class='post_page' href='{$post_url}'>&lt;</a>";
@@ -381,7 +396,7 @@ function endercaster_wx_sync_settings_page()
                 },
                 success: function(resp) {
                     if (!resp.code) {
-                        location.reload(true);
+                        location.reload();
                     } else {
                         alert('同步出错，请查看log');
                     }
@@ -404,7 +419,30 @@ function endercaster_wx_sync_settings_page()
                 success: function(resp) {
                     console.log(resp);
                     if (!resp.code) {
-                        location.reload(true);
+                        location.reload();
+                    } else {
+                        alert('同步出错，请查看log');
+                    }
+
+                }
+            });
+        }
+
+        function delete_remote(sync_id) {
+            jQuery.ajax({
+                type: "POST",
+                url: '<?php bloginfo('url'); ?>/wp-json/endercaster/wx/v1/delete/remote',
+                dataType: 'json',
+                data: {
+                    'sync_id': sync_id
+                },
+                beforeSend: function(request) {
+                    request.setRequestHeader('X-WP-Nonce', "<?php echo wp_create_nonce('wp_rest'); ?>");
+                },
+                success: function(resp) {
+                    console.log(resp);
+                    if (!resp.code) {
+                        location.reload();
                     } else {
                         alert('同步出错，请查看log');
                     }
@@ -425,7 +463,7 @@ function endercaster_wx_sync_settings_page()
                 success: function(resp) {
                     console.log(resp);
                     if (!resp.code) {
-                        location.reload(true);
+                        location.reload();
                     } else {
                         alert('拉取出错，请查看log');
                     }
@@ -521,11 +559,8 @@ function sync_preview($request)
         $resp->set_status(403);
         return $resp;
     }
-    global $wpdb;
-    $prefix = $wpdb->prefix;
     $sync_id = $request['sync_id'];
-    $sql = "select media_id from {$prefix}endercaster_wx_exists where id={$sync_id}";
-    $post = $wpdb->get_row($sql);
+    $post = get_wx_exists_record($sync_id);
     $result = send_preview($post['media_id']);
 
     $data = [
@@ -541,12 +576,52 @@ add_action('rest_api_init', function () {
         'callback' => 'sync_preview'
     ));
 });
+function delete_remote($request)
+{
+    if (!is_user_logged_in()) {
+        $resp = new WP_REST_Response([]);
+        $resp->set_status(403);
+        return $resp;
+    }
+    $sync_id = $request['sync_id'];
+
+    $post = get_wx_exists_record($sync_id);
+    $media_id = $post['media_id'];
+    global $wxlib;
+    $code = $wxlib->delete_material($media_id);
+    if (empty($code)) {
+        global $wpdb;
+        $prefix = $wpdb->prefix;
+        $wpdb->update("{$prefix}endercaster_wx_exists", ["media_id" => '', "sync_time" => date_i18n("Y-m-d H:i:s")], ["id" => $sync_id]);
+    }
+    $data['code'] = $code;
+    $resp = new WP_REST_Response($data);
+    $resp->set_status(200);
+    return $resp;
+}
+add_action('rest_api_init', function () {
+    register_rest_route('endercaster/wx/v1', 'delete/remote', array(
+        'methods' => 'POST',
+        'callback' => 'delete_remote'
+    ));
+});
+//TODO 删除本地post
+function delete_local($request)
+{
+    $sync_id = $request['sync_id'];
+}
+add_action('rest_api_init', function () {
+    register_rest_route('endercaster/wx/v1', 'delete/local', array(
+        'methods' => 'POST',
+        'callback' => 'delete_local'
+    ));
+});
 //TODO 删除
 function test_lib($request)
 {
     global $wxlib;
     return new WP_REST_Response(
-        $wxlib->get_permanent_media_list("news")
+        wp_get_post_tags(14)
     );
 }
 add_action('rest_api_init', function () {
@@ -575,12 +650,21 @@ function add_news_to_wx($post)
         return false;
     }
     $prefix = $wpdb->prefix;
-    $wpdb->insert("{$prefix}endercaster_wx_exists", [
-        "post_id" => $post['id'],
-        "media_id" => $news_media_id,
-        "type" => "news",
-        "sync_time" => date_i18n("Y-m-d H:i:s")
-    ]);
+    if (empty($post['sync_id'])) {
+        $wpdb->insert("{$prefix}endercaster_wx_exists", [
+            "post_id" => $post['id'],
+            "media_id" => $news_media_id,
+            "type" => "news",
+            "sync_time" => date_i18n("Y-m-d H:i:s")
+        ]);
+    } else {
+        $wpdb->insert("{$prefix}endercaster_wx_exists", [
+            "media_id" => $news_media_id,
+            "type" => "news",
+            "sync_time" => date_i18n("Y-m-d H:i:s")
+        ], ['id' => $post['sync_id']]);
+    }
+
     send_preview($news_media_id);
     return true;
 }
