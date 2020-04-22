@@ -502,27 +502,137 @@ function endercaster_pagination_css()
 {
 ?>
     <style>
-        .endercaster_pagination_wrapper {}
+        .endercaster_pagination_wrapper {
+            margin: 10px 20px 0 2px;
+            text-align: right;
+        }
 
         .post_page,
         .next_page,
-        .current_page {}
+        .current_page {
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            line-height: 20px;
+            border-radius: 2px;
+            border: 1px darkcyan solid;
+            cursor: pointer;
+        }
 
         .post_page.disabled,
-        .next_page.disabled {}
+        .next_page.disabled {
+            border: 1px lightgray solid;
+            color: lightgray;
+            cursor: not-allowed;
+        }
 
-        .current_page {}
+        .current_page {
+            background-color: #0073aa;
+            color: white !important;
+        }
     </style>
 <?php
 }
 // ---------------------------------------REST部分---------------------------------------------
-//TODO 暂时搁置
 function download_all($request)
 {
+    if (!is_user_logged_in()) {
+        $resp = new WP_REST_Response([]);
+        $resp->set_status(403);
+        return $resp;
+    }
+    global $wxlib, $wpdb;
     //循环获取全部news
+    $from = 0;
+    $media_list = [];
+    $wx_result = $wxlib->get_permanent_media_list('news', $from);
+    $total = $wx_result['total_count'];
+    while (count($media_list) < $total) {
+        foreach ($wx_result['item'] as $post) {
+            $media_list[] = [
+                'media_id' => $post['media_id'],
+                'guid' => $post['content']['news_item'][0]['content_source_url'],
+                'title' => $post['content']['news_item'][0]['title'],
+                'content' => $post['content']['news_item'][0]['content'],
+                'sync_time' => wp_date('Y-m-d H:i:s', $post['update_time'], wp_timezone())
+            ];
+        }
+        $from += 20;
+        $wx_result = $wxlib->get_permanent_media_list('news', $from);
+    }
+
     //获取全部符合条件的post
+    $prefix = $wpdb->prefix;
+    $sql = "select ID as id,post_title as title,guid from {$prefix}posts as post where post.post_type='post' and post.post_status='publish'";
+    $posts = obj_to_array($wpdb->get_results($sql));
+    $post_map = [];
+    foreach ($posts as $post) {
+        $post_map[$post['guid']] = $post;
+    }
+    //获取现在同步列表中存在的posts
+    $sql = "select post_id,media_id from {$prefix}endercaster_wx_exists";
+    $records = obj_to_array($wpdb->get_results($sql));
+    $exists_ids = array_column($records, 'post_id');
+    $exists_media_ids = array_column($records, 'media_id');
     //逐条对比news的resp.item[.].content.news_item[0].url与post.guid
-    //
+    $to_insert = [];
+    $to_update = [];
+    foreach ($media_list as $media) {
+        $post_id = $posts[$media['guid']];
+        if (empty($post_id)) {
+            $to_insert[] = [
+                'media_id' => $media['media_id'],
+                'wechat_title' => $media['title'],
+                'wechat_content' => $media['content'],
+                'sync_time' => $media['sync_time'],
+                'type' => 'news'
+            ];
+        } else {
+            if (array_search($post_id, $exists_ids) !== false) {
+                $to_update[] = [
+                    'where' => ['post_id' => $post_id],
+                    'data' => [
+                        'media_id' => $media['media_id'],
+                        'wechat_title' => $media['title'],
+                        'wechat_content' => $media['content'],
+                        'sync_time' => $media['sync_time']
+                    ]
+                ];
+            } else if (array_search($media['media_id'], $exists_media_ids) !== false) {
+                $to_update[] = [
+                    'where' => ['media_id' => $media['media_id']],
+                    'data' => [
+                        'post_id' => $post_id,
+                        'wechat_title' => $media['title'],
+                        'wechat_content' => $media['content'],
+                        'sync_time' => $media['sync_time']
+                    ]
+                ];
+            } else {
+                $to_insert[] = [
+                    'post_id' => $post_id,
+                    'media_id' => $media['media_id'],
+                    'wechat_title' => $media['title'],
+                    'wechat_content' => $media['content'],
+                    'sync_time' => $media['sync_time'],
+                    'type' => 'news'
+                ];
+            }
+        }
+    }
+    //update
+    foreach ($to_update as $row) {
+        $wpdb->update("{$prefix}endercaster_wx_exists", $row['data'], $row['where']);
+    }
+    //TODO batch insert
+    foreach ($to_insert as $row) {
+        $wpdb->insert("{$prefix}endercaster_wx_exists", $row);
+    }
+    $resp = new WP_REST_Response(['code' => 0]);
+    $resp->set_status(200);
+    return $resp;
 }
 add_action('rest_api_init', function () {
     register_rest_route('endercaster/wx/v1', 'download/all', array(
@@ -621,7 +731,11 @@ function test_lib($request)
 {
     global $wxlib;
     return new WP_REST_Response(
-        wp_get_post_tags(14)
+        [
+            date_i18n('Y-m-d H:i:s', 1587565627),
+            wp_date('Y-m-d H:i:s', 1587565627, wp_timezone()),
+            get_option('timezone_string')
+        ]
     );
 }
 add_action('rest_api_init', function () {

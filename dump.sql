@@ -4,6 +4,7 @@ create table `{{prefix}}endercaster_wx_exists`(
   `post_id` bigint(20) unsigned comment 'wordpress发布文章对应的id',
   `media_id` varchar(100) comment '微信端对应MEDIA ID',
   `type` varchar(20) comment 'thumb,news',
+  `wechat_title` varchar(100) comment '公众号文章标题',
   `wechat_content` text comment '公众号内容',
   `sync_time` datetime default CURRENT_TIMESTAMP comment '更新时间'
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
