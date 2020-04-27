@@ -5,7 +5,7 @@
  * Plugin Name: 微信素材同步添加插件
  * Plugin URI: https://wordpress.endercaster.com/
  * Description: 特定标签的文章自动同步到素材库
- * Version: 0.0.1
+ * Version: 0.1.0
  * Author: EnderCaster
  * Author URI: https://wordpress.endercaster.com/
  * @package endercaster-wx-sync
@@ -44,12 +44,11 @@ function clear_information()
 {
     global $wpdb;
     $prefix = $wpdb->prefix;
-    //TODO 解除注释
-    // update_option('endercaster-wx-app-id', '');
-    // update_option('endercaster-wx-app-secret', '');
-    // update_option('endercaster-wx-access-key', '');
-    // update_option('endercaster-wx-expire-at', time());
-    // update_option('endercaster-wx-preview-open-id', '');
+    update_option('endercaster-wx-app-id', '');
+    update_option('endercaster-wx-app-secret', '');
+    update_option('endercaster-wx-access-key', '');
+    update_option('endercaster-wx-expire-at', time());
+    update_option('endercaster-wx-preview-open-id', '');
     if (boolval(get_option('endercaster-wx-clear-all-sync-data'))) {
         $init_sql = file_get_contents(dirname(__FILE__) . '/clear.sql');
         $init_sql = str_replace("{{prefix}}", $prefix, $init_sql);
@@ -116,6 +115,17 @@ function sync_post_to_wx($post_id, $post)
 add_action("publish_post", 'sync_post_to_wx', 10, 2);
 add_action("edit_post", 'sync_post_to_wx', 10, 2);
 
+/**
+ * 删除文章钩子
+ * @var $post_id
+ */
+function delete_post_id_from_exists($post_id)
+{
+    global $wpdb;
+    $prefix = $wpdb->prefix;
+    $wpdb->update("{$prefix}endercaster_wx_exists", ["post_id" => null], ['post_id' => $post_id]);
+}
+add_action("delete_post", 'delete_post_id_from_exists', 10, 1);
 //---------------------------------------工具函数---------------------------------------------
 
 function obj_to_array($obj_array)
@@ -185,8 +195,9 @@ function sync_posts_table()
     $prefix = $wpdb->prefix;
     [$current_page, $page_size] = build_page_parameter();
     $start = ($current_page - 1) * $page_size;
-    $sql = "select sync.id as sync_id,post.ID as post_id,post.post_title as title,sync.sync_time as sync_time,sync.media_id as media_id from {$prefix}posts as post left join {$prefix}endercaster_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish' limit {$start},{$page_size}";
+    $sql = "select sync.id as sync_id,post.ID as post_id,post.post_title as title,sync.sync_time as sync_time,sync.media_id as media_id,sync.wechat_title as wechat_title,sync.wechat_content as wechat_content from {$prefix}posts as post left join {$prefix}endercaster_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish' UNION ALL (select sync.id as sync_id,'' as post_id,'' as title,sync.sync_time as sync_time,sync.media_id as media_id,sync.wechat_title as wechat_title,sync.wechat_content as wechat_content from {$prefix}endercaster_wx_exists as sync where sync.post_id is null) limit {$start},{$page_size}";
     $sql_count = "select count(post.ID) as total from {$prefix}posts as post left join {$prefix}endercaster_wx_exists as sync on post.ID=sync.post_id and sync.type='news' where post.post_type='post' and post.post_status='publish'";
+    $sql_count_2 = "select count(media_id) as total from {$prefix}endercaster_wx_exists where post_id is null";
     $data = $wpdb->get_results($sql);
     $data = obj_to_array($data);
     $headers = [
@@ -198,11 +209,17 @@ function sync_posts_table()
 
     ];
     foreach ($data as &$row) {
+        if (empty($row['title'])) {
+            $row['title'] = "微信：" . $row['wechat_title'];
+        } elseif (!empty($row['wechat_title'])) {
+            $row['title'] = $row['title'] . "(" . $row['wechat_title'] . ")";
+        }
         $row['action'] = build_sync_action($row);
     }
     $table_html = build_table($data, $headers);
     echo $table_html;
     $total = $wpdb->get_row($sql_count)->total;
+    $total += $wpdb->get_row($sql_count_2)->total;
     echo build_pageination($total, $page_size, $current_page);
     endercaster_pagination_css();
 }
@@ -285,6 +302,32 @@ function build_pageination($total, $page_size, $current_page)
     $pageination_html .= "</div>";
     return $pageination_html;
 }
+function get_default_post()
+{
+    require_once ABSPATH . '/wp-admin/includes/admin.php';
+    $post = get_default_post_to_edit('post', true);
+    return $post;
+}
+function save_post_as_revision($post_id, $post_data)
+{
+    global $wxlib;
+    $url = get_bloginfo('url') . "/wp-json/wp/v2/posts/{$post_id}";
+    $data = [
+        'content' => $post_data['content'],
+        'id' => $post_id,
+        'status' => 'publish',
+        'title' => $post_data['title']
+    ];
+    $header = [
+        'X-WP-Nonce:' . $_SERVER['HTTP_X_WP_NONCE'],
+        'Cookie:' . $_SERVER['HTTP_COOKIE'],
+    ];
+    $curl = $wxlib->base_post($url, $data);
+    curl_setopt($curl, CURLOPT_HTTPHEADER, $header);
+    $resp_data = $wxlib->get_curl_resp_data($curl);
+    curl_close($curl);
+    return $resp_data;
+}
 // ---------------------------------------页面显示---------------------------------------------
 /**
  * 插件设置页面
@@ -301,12 +344,12 @@ function endercaster_wx_settings_page()
             <!-- *app_id -->
             <tr>
                 <th>APP ID</th>
-                <td><input type="text" id="endercaster-wx-app-id" name="endercaster-wx-app-id" value="<?php echo get_option('endercaster-wx-app-id'); ?>" /></td>
+                <td><input type="password" id="endercaster-wx-app-id" name="endercaster-wx-app-id" value="<?php echo get_option('endercaster-wx-app-id'); ?>" /></td>
             </tr>
             <!-- *app_secret -->
             <tr>
                 <th>APP Secret</th>
-                <td><input type="text" id="endercaster-wx-app-secret" name="endercaster-wx-app-secret" value="<?php echo get_option('endercaster-wx-app-secret'); ?>" /></td>
+                <td><input type="password" id="endercaster-wx-app-secret" name="endercaster-wx-app-secret" value="<?php echo get_option('endercaster-wx-app-secret'); ?>" /></td>
             </tr>
             <!-- preview_user_openid -->
             <tr>
@@ -349,6 +392,7 @@ function endercaster_wx_settings_page()
  */
 function endercaster_wx_sync_settings_page()
 {
+    $wp_nonce = wp_create_nonce('wp_rest');
 ?>
     <!-- header -->
     <h1>文章同步列表</h1>
@@ -357,7 +401,7 @@ function endercaster_wx_sync_settings_page()
     <?php sync_posts_table(); ?>
     <style>
         .post_id {
-            width: 20px;
+            width: 25px;
         }
 
         .title,
@@ -392,7 +436,7 @@ function endercaster_wx_sync_settings_page()
                     'post_id': post_id
                 },
                 beforeSend: function(request) {
-                    request.setRequestHeader('X-WP-Nonce', "<?php echo wp_create_nonce('wp_rest'); ?>");
+                    request.setRequestHeader('X-WP-Nonce', "<?php echo $wp_nonce; ?>");
                 },
                 success: function(resp) {
                     if (!resp.code) {
@@ -414,7 +458,7 @@ function endercaster_wx_sync_settings_page()
                     'sync_id': sync_id
                 },
                 beforeSend: function(request) {
-                    request.setRequestHeader('X-WP-Nonce', "<?php echo wp_create_nonce('wp_rest'); ?>");
+                    request.setRequestHeader('X-WP-Nonce', "<?php echo $wp_nonce; ?>");
                 },
                 success: function(resp) {
                     console.log(resp);
@@ -437,7 +481,7 @@ function endercaster_wx_sync_settings_page()
                     'sync_id': sync_id
                 },
                 beforeSend: function(request) {
-                    request.setRequestHeader('X-WP-Nonce', "<?php echo wp_create_nonce('wp_rest'); ?>");
+                    request.setRequestHeader('X-WP-Nonce', "<?php echo $wp_nonce; ?>");
                 },
                 success: function(resp) {
                     console.log(resp);
@@ -451,6 +495,27 @@ function endercaster_wx_sync_settings_page()
             });
         }
 
+        function sync_local(sync_id) {
+            jQuery.ajax({
+                type: "POST",
+                url: '<?php bloginfo('url'); ?>/wp-json/endercaster/wx/v1/sync/save',
+                dataType: 'json',
+                data: {
+                    'sync_id': sync_id
+                },
+                beforeSend: function(request) {
+                    request.setRequestHeader('X-WP-Nonce', "<?php echo $wp_nonce; ?>");
+                },
+                success: function(resp) {
+                    console.log(resp);
+                    if (!resp.code) {
+                        location.reload();
+                    }
+
+                }
+            });
+        }
+
         function download_all() {
             jQuery.ajax({
                 type: "POST",
@@ -458,7 +523,7 @@ function endercaster_wx_sync_settings_page()
                 dataType: 'json',
                 data: {},
                 beforeSend: function(request) {
-                    request.setRequestHeader('X-WP-Nonce', "<?php echo wp_create_nonce('wp_rest'); ?>");
+                    request.setRequestHeader('X-WP-Nonce', "<?php echo $wp_nonce; ?>");
                 },
                 success: function(resp) {
                     console.log(resp);
@@ -582,7 +647,9 @@ function download_all($request)
     foreach ($media_list as $media) {
         $post_id = $posts[$media['guid']];
         if (empty($post_id)) {
+            $post_id = get_default_post()->ID;
             $to_insert[] = [
+                'post_id' => $post_id,
                 'media_id' => $media['media_id'],
                 'wechat_title' => $media['title'],
                 'wechat_content' => $media['content'],
@@ -715,33 +782,37 @@ add_action('rest_api_init', function () {
         'callback' => 'delete_remote'
     ));
 });
-//TODO 删除本地post
-function delete_local($request)
+function save_to_local($request)
 {
-    $sync_id = $request['sync_id'];
-}
-add_action('rest_api_init', function () {
-    register_rest_route('endercaster/wx/v1', 'delete/local', array(
-        'methods' => 'POST',
-        'callback' => 'delete_local'
-    ));
-});
-//TODO 删除
-function test_lib($request)
-{
+    if (!is_user_logged_in()) {
+        $resp = new WP_REST_Response([]);
+        $resp->set_status(403);
+        return $resp;
+    }
     global $wxlib;
-    return new WP_REST_Response(
-        [
-            date_i18n('Y-m-d H:i:s', 1587565627),
-            wp_date('Y-m-d H:i:s', 1587565627, wp_timezone()),
-            get_option('timezone_string')
-        ]
-    );
+
+    $sync_id = $request['sync_id'];
+    $record = get_wx_exists_record($sync_id);
+    $post_id = $record['post_id'];
+    if (empty($post_id)) {
+        $post_id = get_default_post()->ID;
+        global $wpdb;
+        $prefix = $wpdb->prefix;
+        $wpdb->update("{$prefix}endercaster_wx_exists", ["post_id" => $post_id], ['id' => $sync_id]);
+    }
+    $data = [
+        'content' => $record['wechat_content'],
+        'id' => $post_id,
+        'status' => 'publish',
+        'title' => $record['wechat_title']
+    ];
+    $resp_data = save_post_as_revision($post_id, $data);
+    return new WP_REST_Response($resp_data);
 }
 add_action('rest_api_init', function () {
-    register_rest_route('endercaster/wx/v1', 'test', array(
-        'methods'  => 'GET',
-        'callback' => 'test_lib'
+    register_rest_route('endercaster/wx/v1', 'sync/save', array(
+        'methods'  => 'POST',
+        'callback' => 'save_to_local'
     ));
 });
 // ---------------------------------------微信部分---------------------------------------------

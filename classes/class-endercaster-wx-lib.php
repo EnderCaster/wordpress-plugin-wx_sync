@@ -108,7 +108,6 @@ class WxLib
         $response_data = $this->get_curl_resp_data($curl);
         $this->log($curl, $response_data, 'get_media_list', $post_data);
         curl_close($curl);
-        //TODO
         return $response_data;
     }
     function get_permanent_media_counts()
@@ -118,7 +117,6 @@ class WxLib
         $response_data = $this->get_curl_resp_data($curl);
         $this->log($curl, $response_data, 'get_media_counts');
         curl_close($curl);
-        //TODO
         return $response_data;
     }
     function add_permanent_material($file, $type = "image")
